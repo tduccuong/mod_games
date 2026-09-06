@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 #
-# Created by Cuong Truong.
-#
 # mod_rtk3.sh -- Maximize city resources, army stats, and character skills in
 #                a Romance of the Three Kingdoms III (KOEI, 1992/1993 DOS/
 #                PC-98 port, English fan-translated .SAV) save file.
@@ -13,8 +11,17 @@
 #                 [--bump-officers-for-ruler NAME]...
 #
 #   --input FILE (required)     Path to a SANGOKU3.SAV (or backup copy).
-#                                 This file is NEVER modified in place.
-#   --output FILE                Output path. Defaults to "<input>.maxed.sav".
+#   --output FILE                Output path. Defaults to "<input>.maxed.sav",
+#                                 in which case --input is NEVER touched (the
+#                                 game keeps loading the old, unmaxed file
+#                                 until you rename/copy the .maxed.sav output
+#                                 over it yourself -- this is the #1 cause of
+#                                 "I ran the script but nothing changed").
+#                                 Pass --output pointing at the SAME path as
+#                                 --input to mod the save in place; in that
+#                                 case the script automatically makes a
+#                                 timestamped "<input>.autobak-<timestamp>"
+#                                 copy of the original first, every run.
 #   --ruler NAME                 Max this ruler's 6 skill stats (Army Command,
 #                                 Navy Command, War, Intelligence, Politics,
 #                                 Charm). Exact in-game spelling, case-sensitive.
@@ -279,6 +286,18 @@ echo "Output file: $OUT_FILE"
 for n in "${BUMP_OFFICERS[@]:-}"; do [[ -n "$n" ]] && echo "Bump officer         : $n"; done
 for n in "${BUMP_OFFICERS_FOR_RULER[@]:-}"; do [[ -n "$n" ]] && echo "Bump officers for ruler: $n"; done
 
+# By default this script NEVER touches the input file -- it writes to a
+# separate "<input>.maxed.sav" unless --output is given. The one case where
+# it DOES overwrite something is if you explicitly pass --output pointing
+# at the same file as --input (in-place mode). In that case, and only that
+# case, take an automatic timestamped safety backup first so an in-place
+# run is never a one-way door.
+if [[ -e "$OUT_FILE" ]] && [[ "$(realpath "$IN_FILE")" == "$(realpath "$OUT_FILE")" ]]; then
+  AUTO_BACKUP="${IN_FILE}.autobak-$(date +%Y%m%d-%H%M%S)"
+  cp -p "$IN_FILE" "$AUTO_BACKUP"
+  echo "In-place run detected (--output == --input): auto-backed up original to $AUTO_BACKUP"
+fi
+
 python3 - "$IN_FILE" "$OUT_FILE" "$RULER_NAME" "$CITY_NAME" \
     --officers "${BUMP_OFFICERS[@]:-}" \
     --officers-for-ruler "${BUMP_OFFICERS_FOR_RULER[@]:-}" <<'PYEOF'
@@ -427,8 +446,14 @@ if city_name:
             continue
         # sanity check: the name should be followed by NUL padding (real
         # record), not running into other text (avoids false positives in
-        # prose/messages).
-        pad_ok = all(b == 0 for b in data[name_off + len(city_bytes):name_off + 19])
+        # prose/messages). Only the first 7 bytes right after the name are
+        # checked -- relative offsets +69/+70 (2 bytes right before each
+        # record's 0xff 0xff marker) are a real, still-unmapped field that
+        # varies per city (confirmed nonzero for some cities, e.g. Dai
+        # Xian), NOT fixed padding. An earlier version of this check
+        # required those 2 bytes to be zero too, which incorrectly rejected
+        # -- and silently skipped patching -- any city where they weren't.
+        pad_ok = all(b == 0 for b in data[name_off + len(city_bytes):name_off + len(city_bytes) + 7])
         if not pad_ok:
             continue
 
