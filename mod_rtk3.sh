@@ -9,6 +9,13 @@
 #                 [--ruler NAME] [--city NAME_OR_NUMBER]
 #                 [--bump-officer NAME]...
 #                 [--bump-officers-for-ruler NAME]...
+#                 [--no-auto-ruler]
+#
+#   Just "--city NAME_OR_NUMBER" by itself is enough to max out that city
+#   AND every officer garrisoned there -- no ruler name required. Every run
+#   auto-detects your own character(s) from the save's character-creation
+#   roster and maxes their garrisons too; see "AUTO-DETECTING YOUR RULER"
+#   further down. Pass --no-auto-ruler to turn that off.
 #
 #   --input FILE (required)     Path to a SANGOKU3.SAV (or backup copy).
 #   --output FILE                Output path. Defaults to "<input>.maxed.sav",
@@ -139,6 +146,34 @@
 #   field for the named officer too (a real name resolves straight to their
 #   own RICH record, no positional scanning needed).
 #
+# --- AUTO-DETECTING YOUR RULER (so --city alone is enough) -----------------
+# There is no reverse-engineered field linking a city record to the person-
+# table position of its governor/garrison (several hypotheses -- an index
+# stored on the city record, a fixed per-city slot in the person table, a
+# per-officer "assigned city" byte -- were tested against real save data and
+# none held up; see git history for the investigation). So the city record
+# alone cannot tell you where to find its officers.
+#
+# What DOES reliably work: the save's character-creation roster. "Create
+# User Data" always writes your character(s) into a fixed table of 8
+# 21-byte slots starting at offset 0x26; every unused slot is literally the
+# placeholder text "New Ruler" (confirmed against the roster of the save
+# used for testing, which had exactly one real name in slot 0 and 7
+# placeholders). So: read those 8 slots, skip anything that reads "New
+# Ruler", and whatever's left is your real character name(s) -- with no
+# user input needed. Every run then automatically calls the same
+# --bump-officers-for-ruler logic (positional scan from that name's RICH
+# record) for each detected name, in addition to anything explicitly passed
+# with --ruler/--bump-officer/--bump-officers-for-ruler. --no-auto-ruler
+# disables this if you ever don't want it.
+#
+# This does NOT solve "find officers for city X" in general (a city
+# governed by a random AI-generated officer you haven't named yourself still
+# can't be targeted without knowing their name) -- it solves the much more
+# common case of "find officers for MY city", since your own ruler is
+# nearly always who the game considers to be governing wherever you're
+# playing.
+#
 # --- Officer troop counts ("army" stats) (CONFIRMED for Soldiers) ----------
 # The city's displayed "Sold:" total is NOT a field of the city record. It is
 # the live sum of the personal troop counts of whichever officers/generals
@@ -232,9 +267,16 @@ Usage: mod_rtk3.sh --input FILE [--output FILE]
                     [--ruler NAME] [--city NAME_OR_NUMBER]
                     [--bump-officer NAME]...
                     [--bump-officers-for-ruler NAME]...
+                    [--no-auto-ruler]
 
 At least one of --ruler / --city / --bump-officer / --bump-officers-for-ruler
 is required. See the comments at the top of this script for full details.
+
+By default, every run also auto-detects your custom character(s) from the
+save's own character-creation roster and maxes their garrisons' skills +
+Soldiers too (same as passing --bump-officers-for-ruler for each of them) --
+so "--city 7" alone is enough, no ruler name required. Pass --no-auto-ruler
+to turn this off.
 EOF
   exit 1
 }
@@ -245,6 +287,7 @@ RULER_NAME=""
 CITY_ARG=""
 BUMP_OFFICERS=()
 BUMP_OFFICERS_FOR_RULER=()
+AUTO_RULER=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -254,6 +297,7 @@ while [[ $# -gt 0 ]]; do
     --city)   CITY_ARG="$2"; shift 2 ;;
     --bump-officer) BUMP_OFFICERS+=("$2"); shift 2 ;;
     --bump-officers-for-ruler) BUMP_OFFICERS_FOR_RULER+=("$2"); shift 2 ;;
+    --no-auto-ruler) AUTO_RULER=0; shift 1 ;;
     -h|--help) usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
@@ -298,14 +342,15 @@ if [[ -e "$OUT_FILE" ]] && [[ "$(realpath "$IN_FILE")" == "$(realpath "$OUT_FILE
   echo "In-place run detected (--output == --input): auto-backed up original to $AUTO_BACKUP"
 fi
 
-python3 - "$IN_FILE" "$OUT_FILE" "$RULER_NAME" "$CITY_NAME" \
+python3 - "$IN_FILE" "$OUT_FILE" "$RULER_NAME" "$CITY_NAME" "$AUTO_RULER" \
     --officers "${BUMP_OFFICERS[@]:-}" \
     --officers-for-ruler "${BUMP_OFFICERS_FOR_RULER[@]:-}" <<'PYEOF'
 import sys, struct
 
 argv = sys.argv[1:]
-in_path, out_path, ruler_name, city_name = argv[0:4]
-rest = argv[4:]
+in_path, out_path, ruler_name, city_name, auto_ruler_flag = argv[0:5]
+auto_ruler = auto_ruler_flag == "1"
+rest = argv[5:]
 
 bump_officers = []
 bump_officers_for_ruler = []
@@ -353,9 +398,38 @@ MAX_SOLDIERS = 65535   # true u16 field max. Confirmed via live reload that
                         # range -- that's why the bar looked half-empty even
                         # after "maxing".
 STRIDE = 69
-SCAN_WINDOW_SLOTS = 15  # see header comment: ruler occupies 8 dead slots,
-                         # officers follow; this window covers a typical
-                         # small garrison with room to spare.
+SCAN_WINDOW_SLOTS = 40  # see header comment: ruler occupies 8 dead slots,
+                         # officers follow; widened from an earlier value of
+                         # 15 because a kingdom that has grown to hold
+                         # several cities needs more dead/garrison slots
+                         # scanned before reaching a later city's officers.
+
+# ---------------------------------------------------------------------------
+# Custom character roster (see header comment "AUTO-DETECTING YOUR RULER"):
+# 8 fixed-width slots starting at a fixed offset, used by the game's
+# "Create User Data" character creator. Unused slots are literally the
+# placeholder text "New Ruler". Real slots hold whatever name you gave your
+# character when you created them -- this is how --city alone can find your
+# officers without you typing a name.
+# ---------------------------------------------------------------------------
+ROSTER_BASE = 0x26
+ROSTER_STRIDE = 21
+ROSTER_SLOTS = 8
+ROSTER_PLACEHOLDER = b"New Ruler"
+
+def detect_custom_ruler_names():
+    names = []
+    for i in range(ROSTER_SLOTS):
+        off = ROSTER_BASE + i * ROSTER_STRIDE
+        raw = data[off:off + ROSTER_STRIDE]
+        end = raw.find(b"\x00")
+        raw = raw[:end] if end != -1 else raw
+        if raw and raw != ROSTER_PLACEHOLDER:
+            try:
+                names.append(raw.decode("ascii"))
+            except UnicodeDecodeError:
+                pass
+    return names
 
 changes = 0
 
@@ -430,6 +504,19 @@ def bump_character(name, also_max_soldiers, label):
                 max_soldiers_at(rich_stats, f"{label} {name!r}")
 
     return rich_positions
+
+# ---------------------------------------------------------------------------
+# 0. AUTO-DETECT YOUR RULER(S) so --city alone is enough (see header comment
+#    "AUTO-DETECTING YOUR RULER"). Merge into bump_officers_for_ruler,
+#    de-duplicated against anything already given explicitly.
+# ---------------------------------------------------------------------------
+if auto_ruler:
+    detected = detect_custom_ruler_names()
+    new_names = [n for n in detected if n not in bump_officers_for_ruler]
+    if new_names:
+        print(f"Auto-detected custom character(s) from save roster: {new_names} "
+              f"-- also maxing their garrisons' skills + Soldiers (use --no-auto-ruler to disable)")
+        bump_officers_for_ruler.extend(new_names)
 
 # ---------------------------------------------------------------------------
 # 1. CITY RESOURCES
