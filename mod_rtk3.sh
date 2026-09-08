@@ -6,16 +6,31 @@
 #
 # USAGE:
 #   ./mod_rtk3.sh --input FILE [--output FILE]
-#                 [--ruler NAME] [--city NAME_OR_NUMBER]
-#                 [--bump-officer NAME]...
+#                 [--ruler NAME]
+#                 [--bump-cities "NAME_OR_NUMBER, NAME_OR_NUMBER, ..."]
+#                 [--bump-officers "NAME, NAME, ..."]
 #                 [--bump-officers-for-ruler NAME]...
+#                 [--bump-all-for-ruler NAME]
 #                 [--no-auto-ruler]
 #
-#   Just "--city NAME_OR_NUMBER" by itself is enough to max out that city
-#   AND every officer garrisoned there -- no ruler name required. Every run
-#   auto-detects your own character(s) from the save's character-creation
-#   roster and maxes their garrisons too; see "AUTO-DETECTING YOUR RULER"
-#   further down. Pass --no-auto-ruler to turn that off.
+#   --bump-cities and --bump-officers each take ONE comma-separated string
+#   (quote it so the shell passes it through as one argument). Whitespace
+#   around each comma is trimmed, so "3, 6,7 , 9" and "3,6,7,9" are
+#   equivalent.
+#
+#   Just "--bump-cities N" by itself is enough to max out that city AND
+#   every officer garrisoned there, PROVIDED that city is governed directly
+#   by your own custom character -- no ruler name required in that case.
+#   Every run auto-detects your own character(s) from the save's
+#   character-creation roster and maxes their garrisons too; see
+#   "AUTO-DETECTING YOUR RULER" further down. Pass --no-auto-ruler to turn
+#   that off.
+#
+#   For a city governed by someone else (e.g. a historical general who came
+#   with a freshly conquered city), auto-detection can't find them -- see
+#   "AUTO-DETECTING YOUR RULER" and "--bump-all-for-ruler LIMITATIONS" below
+#   for why, and use --bump-officers with their name (visible in
+#   Info > Own city > Officers data in-game) once you know it.
 #
 #   --input FILE (required)     Path to a SANGOKU3.SAV (or backup copy).
 #   --output FILE                Output path. Defaults to "<input>.maxed.sav",
@@ -32,33 +47,82 @@
 #   --ruler NAME                 Max this ruler's 6 skill stats (Army Command,
 #                                 Navy Command, War, Intelligence, Politics,
 #                                 Charm). Exact in-game spelling, case-sensitive.
-#   --city NAME_OR_NUMBER         Max this city's resources/dev stats. Either
-#                                 the in-game name ("Jin Yang") or its map
-#                                 number (4), resolved via CITY_NAMES below.
-#   --bump-officer NAME           Max one specific officer's 6 skill stats and
-#                                 their personal Soldiers count. Repeatable.
+#   --bump-cities "A, B, ..."     Max each city's resources/dev stats. Each
+#                                 entry is either the in-game name ("Jin
+#                                 Yang") or its map number (4), resolved via
+#                                 CITY_NAMES below. Example:
+#                                 --bump-cities "3, 6, 7, 9"
+#   --bump-officers "A, B, ..."   Max each named officer's 6 skill stats and
+#                                 their personal Soldiers count. Example:
+#                                 --bump-officers "Zhang He, Wen Chou"
 #   --bump-officers-for-ruler NAME
 #                                 Max stats + Soldiers for every officer found
 #                                 stationed alongside the named ruler (see
 #                                 "SCOPE" note below -- this is NOT every
 #                                 officer in that ruler's whole kingdom).
 #                                 Repeatable.
+#   --bump-all-for-ruler NAME     Shorthand for --ruler NAME
+#                                 --bump-officers-for-ruler NAME together.
+#                                 Read "--bump-all-for-ruler LIMITATIONS"
+#                                 below before relying on this for a kingdom
+#                                 with conquered cities -- it does NOT
+#                                 discover which cities belong to the ruler,
+#                                 you still need --bump-cities for each one.
 #
-#   At least one of --ruler / --city / --bump-officer / --bump-officers-for-ruler
-#   must be given.
+#   At least one of --ruler / --bump-cities / --bump-officers /
+#   --bump-officers-for-ruler / --bump-all-for-ruler must be given.
+#
+# ============================================================================
+# --bump-all-for-ruler LIMITATIONS (read this before using it)
+# ============================================================================
+# This flag does NOT "find all the cities belonging to a ruler" -- that was
+# investigated and is not something this save format's fields support (see
+# below). What it actually does is exactly --ruler NAME +
+# --bump-officers-for-ruler NAME: max the ruler's own 6 skills, then the
+# positional officer-scan from their record (see "AUTO-DETECTING YOUR RULER").
+# That scan happens to reach some, but not all, of a multi-city kingdom's
+# officers (in testing it consistently found the officer personally governing
+# a second city, but not that city's OTHER officers, nor a third city's
+# officers at all). You still need --bump-cities "A, B, ..." for each city's
+# resources, and --bump-officers "A, B, ..." for officers the scan doesn't
+# reach -- get their names from Info > Own city > Officers data.
+#
+# What was tried and ruled out, so this isn't reinvestigated every time:
+#   - A per-officer "kingdom ID" byte: one candidate byte position was
+#     constant across a 2-officer sample, but checking it against a larger
+#     sample (6+ officers across 2 cities) showed it just varies per officer
+#     like any other personal stat -- not a kingdom marker.
+#   - A per-city "owner" byte on the city record: compared the unmapped city
+#     record bytes across several owned and unowned cities; no byte cleanly
+#     separates the two groups.
+#   - A city-ID byte stored near an officer's name in their own record:
+#     checked the ~30 bytes following several officers' name fields against
+#     their known city's map number; no consistent match.
+# None of these held up, and guessing further risks writing to a byte that
+# means something else. If you find the real mechanism, --bump-all-for-ruler
+# is exactly where a real "find this ruler's cities" implementation would
+# plug in.
 #
 # EXAMPLES:
-#   ./mod_rtk3.sh --input SANGOKU3.SAV.modbackup --ruler "CUONG TRUONG" --city 4
+#   ./mod_rtk3.sh --input SANGOKU3.SAV.modbackup --ruler "CUONG TRUONG" --bump-cities 4
 #
-#   ./mod_rtk3.sh --input SANGOKU3.SAV.modbackup --ruler "CUONG TRUONG" --city "Jin Yang" \
+#   ./mod_rtk3.sh --input SANGOKU3.SAV.modbackup --ruler "CUONG TRUONG" --bump-cities "Jin Yang" \
 #                 --output SANGOKU3.SAV.maxed
 #
 #   # Just max one named general anywhere in the file, nothing else:
-#   ./mod_rtk3.sh --input SANGOKU3.SAV.modbackup --bump-officer "Zhao Yun"
+#   ./mod_rtk3.sh --input SANGOKU3.SAV.modbackup --bump-officers "Zhao Yun"
 #
 #   # Max the ruler's own skills AND every officer garrisoned with them:
 #   ./mod_rtk3.sh --input SANGOKU3.SAV.modbackup --ruler "CUONG TRUONG" \
 #                 --bump-officers-for-ruler "CUONG TRUONG"
+#
+#   # Same as above, shorter -- plus max every city in a multi-city kingdom
+#   # in one run (each city still has to be named explicitly; see
+#   # "--bump-all-for-ruler LIMITATIONS" for why):
+#   ./mod_rtk3.sh --input SANGOKU3.SAV --output SANGOKU3.SAV \
+#                 --bump-all-for-ruler "CUONG TRUONG" \
+#                 --bump-cities "3, 6, 7, 9" \
+#                 --bump-officers "Zhang He, Wen Chou"
 #
 # ============================================================================
 # HOW THE SAVE FORMAT WAS REVERSE-ENGINEERED
@@ -123,7 +187,7 @@
 # Character stat blocks appear in two different shapes in the file. Both are
 # anchored by finding the character's name as literal ASCII text and reading
 # backward from it (this works identically whether the name is a ruler or
-# any other named officer -- see --bump-officer). There is no separate
+# any other named officer -- see --bump-officers). There is no separate
 # "signature" byte sequence -- the bytes immediately preceding the name in a
 # valid record ARE the 6 stat values, so validity is checked by range (each
 # of the 6 must be 1-100).
@@ -142,11 +206,11 @@
 #     name_offset-39-11                : Soldiers, u16 LE -- see below
 #   This is the shape actually read by the live game screens. This is the
 #   copy that matters; CONFIRMED by editing it and seeing the Info screens
-#   update. --bump-officer maxes this same 11-bytes-before-stats Soldiers
+#   update. --bump-officers maxes this same 11-bytes-before-stats Soldiers
 #   field for the named officer too (a real name resolves straight to their
 #   own RICH record, no positional scanning needed).
 #
-# --- AUTO-DETECTING YOUR RULER (so --city alone is enough) -----------------
+# --- AUTO-DETECTING YOUR RULER (so --bump-cities alone is enough) ----------
 # There is no reverse-engineered field linking a city record to the person-
 # table position of its governor/garrison (several hypotheses -- an index
 # stored on the city record, a fixed per-city slot in the person table, a
@@ -164,7 +228,7 @@
 # user input needed. Every run then automatically calls the same
 # --bump-officers-for-ruler logic (positional scan from that name's RICH
 # record) for each detected name, in addition to anything explicitly passed
-# with --ruler/--bump-officer/--bump-officers-for-ruler. --no-auto-ruler
+# with --ruler/--bump-officers/--bump-officers-for-ruler. --no-auto-ruler
 # disables this if you ever don't want it.
 #
 # This does NOT solve "find officers for city X" in general (a city
@@ -205,9 +269,9 @@
 # There is no reverse-engineered per-officer "kingdom" or "loyal to ruler X"
 # byte, so this cannot reach officers in a ruler's OTHER cities if their
 # kingdom holds more than one. It is exactly the same underlying scan the
-# base --city/--ruler run already used to find that city's garrison.
+# base --bump-cities/--ruler run already used to find that city's garrison.
 #
-# SAFETY NOTE for --bump-officer / --bump-officers-for-ruler / --ruler: names
+# SAFETY NOTE for --bump-officers / --bump-officers-for-ruler / --ruler: names
 # are matched by raw text search, and short/generic names risk coincidental
 # matches elsewhere in a ~650KB binary file. This was NOT hypothetical --
 # testing with the single-letter placeholder name "A" (used for an
@@ -264,27 +328,56 @@ CITY_NAMES=(
 usage() {
   cat >&2 <<'EOF'
 Usage: mod_rtk3.sh --input FILE [--output FILE]
-                    [--ruler NAME] [--city NAME_OR_NUMBER]
-                    [--bump-officer NAME]...
+                    [--ruler NAME]
+                    [--bump-cities "NAME_OR_NUMBER, NAME_OR_NUMBER, ..."]
+                    [--bump-officers "NAME, NAME, ..."]
                     [--bump-officers-for-ruler NAME]...
+                    [--bump-all-for-ruler NAME]
                     [--no-auto-ruler]
 
-At least one of --ruler / --city / --bump-officer / --bump-officers-for-ruler
-is required. See the comments at the top of this script for full details.
+At least one of --ruler / --bump-cities / --bump-officers /
+--bump-officers-for-ruler / --bump-all-for-ruler is required. See the
+comments at the top of this script for full details.
+
+--bump-cities and --bump-officers each take ONE comma-separated string
+(quote it). Whitespace around each comma is trimmed.
 
 By default, every run also auto-detects your custom character(s) from the
 save's own character-creation roster and maxes their garrisons' skills +
 Soldiers too (same as passing --bump-officers-for-ruler for each of them) --
-so "--city 7" alone is enough, no ruler name required. Pass --no-auto-ruler
-to turn this off.
+so "--bump-cities 7" alone is enough, no ruler name required. Pass
+--no-auto-ruler to turn this off.
 EOF
   exit 1
+}
+
+# Trim leading/trailing whitespace from $1.
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# Split $1 on commas, trim whitespace from each piece, append non-empty
+# pieces to the array named by $2 (e.g. split_csv_append "$2" BUMP_OFFICERS).
+split_csv_append() {
+  local csv="$1"
+  local -n out_array="$2"
+  local IFS=','
+  local -a parts
+  read -ra parts <<< "$csv"
+  local p
+  for p in "${parts[@]}"; do
+    p="$(trim "$p")"
+    [[ -n "$p" ]] && out_array+=("$p")
+  done
 }
 
 IN_FILE=""
 OUT_FILE=""
 RULER_NAME=""
-CITY_ARG=""
+CITY_ARGS=()
 BUMP_OFFICERS=()
 BUMP_OFFICERS_FOR_RULER=()
 AUTO_RULER=1
@@ -294,9 +387,13 @@ while [[ $# -gt 0 ]]; do
     --input)  IN_FILE="$2"; shift 2 ;;
     --output) OUT_FILE="$2"; shift 2 ;;
     --ruler)  RULER_NAME="$2"; shift 2 ;;
-    --city)   CITY_ARG="$2"; shift 2 ;;
-    --bump-officer) BUMP_OFFICERS+=("$2"); shift 2 ;;
+    --bump-cities)   split_csv_append "$2" CITY_ARGS; shift 2 ;;
+    --bump-officers) split_csv_append "$2" BUMP_OFFICERS; shift 2 ;;
     --bump-officers-for-ruler) BUMP_OFFICERS_FOR_RULER+=("$2"); shift 2 ;;
+    --bump-all-for-ruler)
+      RULER_NAME="$2"
+      BUMP_OFFICERS_FOR_RULER+=("$2")
+      shift 2 ;;
     --no-auto-ruler) AUTO_RULER=0; shift 1 ;;
     -h|--help) usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
@@ -307,26 +404,33 @@ done
 [[ -f "$IN_FILE" ]] || { echo "Error: input file not found: $IN_FILE" >&2; exit 1; }
 [[ -z "$OUT_FILE" ]] && OUT_FILE="${IN_FILE}.maxed.sav"
 
-if [[ -z "$RULER_NAME" && -z "$CITY_ARG" && ${#BUMP_OFFICERS[@]} -eq 0 && ${#BUMP_OFFICERS_FOR_RULER[@]} -eq 0 ]]; then
-  echo "Error: nothing to do -- give at least one of --ruler / --city / --bump-officer / --bump-officers-for-ruler" >&2
+if [[ -z "$RULER_NAME" && ${#CITY_ARGS[@]} -eq 0 && ${#BUMP_OFFICERS[@]} -eq 0 && ${#BUMP_OFFICERS_FOR_RULER[@]} -eq 0 ]]; then
+  echo "Error: nothing to do -- give at least one of --ruler / --bump-cities / --bump-officers / --bump-officers-for-ruler / --bump-all-for-ruler" >&2
   usage
 fi
 
-# Resolve a numeric city argument to its name via the table above.
-CITY_NAME="$CITY_ARG"
-if [[ -n "$CITY_ARG" && "$CITY_ARG" =~ ^[0-9]+$ ]]; then
-  idx=$((CITY_ARG - 1))
-  if (( idx < 0 || idx >= ${#CITY_NAMES[@]} )); then
-    echo "Error: city number $CITY_ARG out of range (1-${#CITY_NAMES[@]})" >&2
-    exit 1
+# Resolve numeric city arguments to names via the table above. --bump-cities
+# takes a comma-separated list (e.g. --bump-cities "3, 6, 9") so several
+# cities can be maxed in a single run.
+CITY_NAME_LIST=()
+for arg in "${CITY_ARGS[@]:-}"; do
+  [[ -z "$arg" ]] && continue
+  if [[ "$arg" =~ ^[0-9]+$ ]]; then
+    idx=$((arg - 1))
+    if (( idx < 0 || idx >= ${#CITY_NAMES[@]} )); then
+      echo "Error: city number $arg out of range (1-${#CITY_NAMES[@]})" >&2
+      exit 1
+    fi
+    CITY_NAME_LIST+=("${CITY_NAMES[$idx]}")
+  else
+    CITY_NAME_LIST+=("$arg")
   fi
-  CITY_NAME="${CITY_NAMES[$idx]}"
-fi
+done
 
 echo "Input file : $IN_FILE"
 echo "Output file: $OUT_FILE"
 [[ -n "$RULER_NAME" ]] && echo "Ruler      : $RULER_NAME"
-[[ -n "$CITY_NAME"  ]] && echo "City       : $CITY_NAME"
+for n in "${CITY_NAME_LIST[@]:-}"; do [[ -n "$n" ]] && echo "City       : $n"; done
 for n in "${BUMP_OFFICERS[@]:-}"; do [[ -n "$n" ]] && echo "Bump officer         : $n"; done
 for n in "${BUMP_OFFICERS_FOR_RULER[@]:-}"; do [[ -n "$n" ]] && echo "Bump officers for ruler: $n"; done
 
@@ -342,20 +446,25 @@ if [[ -e "$OUT_FILE" ]] && [[ "$(realpath "$IN_FILE")" == "$(realpath "$OUT_FILE
   echo "In-place run detected (--output == --input): auto-backed up original to $AUTO_BACKUP"
 fi
 
-python3 - "$IN_FILE" "$OUT_FILE" "$RULER_NAME" "$CITY_NAME" "$AUTO_RULER" \
+python3 - "$IN_FILE" "$OUT_FILE" "$RULER_NAME" "$AUTO_RULER" \
+    --cities "${CITY_NAME_LIST[@]:-}" \
     --officers "${BUMP_OFFICERS[@]:-}" \
     --officers-for-ruler "${BUMP_OFFICERS_FOR_RULER[@]:-}" <<'PYEOF'
 import sys, struct
 
 argv = sys.argv[1:]
-in_path, out_path, ruler_name, city_name, auto_ruler_flag = argv[0:5]
+in_path, out_path, ruler_name, auto_ruler_flag = argv[0:4]
 auto_ruler = auto_ruler_flag == "1"
-rest = argv[5:]
+rest = argv[4:]
 
+city_names = []
 bump_officers = []
 bump_officers_for_ruler = []
 mode = None
 for tok in rest:
+    if tok == "--cities":
+        mode = "cities"
+        continue
     if tok == "--officers":
         mode = "officers"
         continue
@@ -364,7 +473,9 @@ for tok in rest:
         continue
     if not tok:
         continue
-    if mode == "officers":
+    if mode == "cities":
+        city_names.append(tok)
+    elif mode == "officers":
         bump_officers.append(tok)
     elif mode == "for_ruler":
         bump_officers_for_ruler.append(tok)
@@ -409,7 +520,7 @@ SCAN_WINDOW_SLOTS = 40  # see header comment: ruler occupies 8 dead slots,
 # 8 fixed-width slots starting at a fixed offset, used by the game's
 # "Create User Data" character creator. Unused slots are literally the
 # placeholder text "New Ruler". Real slots hold whatever name you gave your
-# character when you created them -- this is how --city alone can find your
+# character when you created them -- this is how --bump-cities alone can find your
 # officers without you typing a name.
 # ---------------------------------------------------------------------------
 ROSTER_BASE = 0x26
@@ -506,7 +617,7 @@ def bump_character(name, also_max_soldiers, label):
     return rich_positions
 
 # ---------------------------------------------------------------------------
-# 0. AUTO-DETECT YOUR RULER(S) so --city alone is enough (see header comment
+# 0. AUTO-DETECT YOUR RULER(S) so --bump-cities alone is enough (see header comment
 #    "AUTO-DETECTING YOUR RULER"). Merge into bump_officers_for_ruler,
 #    de-duplicated against anything already given explicitly.
 # ---------------------------------------------------------------------------
@@ -519,9 +630,10 @@ if auto_ruler:
         bump_officers_for_ruler.extend(new_names)
 
 # ---------------------------------------------------------------------------
-# 1. CITY RESOURCES
+# 1. CITY RESOURCES (--bump-cities takes a comma-separated list, e.g.
+#    --bump-cities "3, 6, 9", to max several cities in one run)
 # ---------------------------------------------------------------------------
-if city_name:
+for city_name in city_names:
     city_bytes = city_name.encode("ascii")
     city_hits = find_all(city_bytes)
     if not city_hits:
@@ -568,7 +680,7 @@ if ruler_name:
     bump_character(ruler_name, also_max_soldiers=False, label="ruler")
 
 # ---------------------------------------------------------------------------
-# 3. --bump-officer NAME (repeatable): max one named officer's skills +
+# 3. --bump-officers "A, B, ...": max each named officer's skills +
 #    their own Soldiers count.
 # ---------------------------------------------------------------------------
 for name in bump_officers:
